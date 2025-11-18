@@ -1,0 +1,75 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{geometry}
+\geometry{a4paper, margin=1in}
+
+\title{GCS Path Planning Formulation}
+\author{Antigravity}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section*{Mathematical Formulation}
+
+We solve a Mixed-Integer Convex Program (MICP) to find a path through the graph of convex sets and optimize the trajectory within them.
+
+\subsection*{Sets and Indices}
+\begin{itemize}
+    \item $V$: Set of convex regions (polygons), indexed by $i$.
+    \item $E$: Set of edges $(i, j)$ representing adjacency between region $i$ and $j$.
+    \item $K$: Degree of the B\'ezier curve (we use $K=2$ for quadratic).
+    \item $d$: Dimension ($d=2$).
+\end{itemize}
+
+\subsection*{Variables}
+\begin{itemize}
+    \item $y_i \in \{0, 1\}$: Binary variable, equal to 1 if region $i$ is visited.
+    \item $z_{ij} \in \{0, 1\}$: Binary variable, equal to 1 if the transition from region $i$ to $j$ is active.
+    \item $x_{i,k} \in \mathbb{R}^2$: Control point $k$ ($k \in \{0, \dots, K\}$) for the B\'ezier curve in region $i$.
+    \item $t_{i,k} \in \mathbb{R}^2$: Slack variables for L1 norm minimization.
+\end{itemize}
+
+\subsection*{Optimization Problem}
+
+\begin{equation*}
+\min \sum_{i \in V} \sum_{k=1}^K \| x_{i,k} - x_{i,k-1} \|_1
+\end{equation*}
+
+\noindent \textbf{Subject to:}
+
+\subsubsection*{1. Flow Conservation}
+\begin{align*}
+& \sum_{j: (s,j) \in E} z_{sj} - \sum_{j: (j,s) \in E} z_{js} = 1 \quad (\text{Start Node } s) \\
+& \sum_{j: (g,j) \in E} z_{gj} - \sum_{j: (j,g) \in E} z_{jg} = -1 \quad (\text{Goal Node } g) \\
+& \sum_{j: (i,j) \in E} z_{ij} - \sum_{j: (j,i) \in E} z_{ji} = 0 \quad \forall i \in V \setminus \{s, g\} \\
+& y_i \ge \sum_{j} z_{ij}, \quad y_i \ge \sum_{j} z_{ji}
+\end{align*}
+
+\subsubsection*{2. Containment}
+\begin{align*}
+& A_i x_{i,k} \le b_i + M(1 - y_i) \quad \forall i \in V, k \in \{0,\dots,K\} \\
+& -M y_i \le x_{i,k} \le M y_i \quad (\text{Force } x_{i,k}=0 \text{ if } y_i=0)
+\end{align*}
+
+\subsubsection*{3. Continuity ($C^0$)}
+\begin{equation*}
+\| x_{i,K} - x_{j,0} \|_\infty \le M(1 - z_{ij}) \quad \forall (i,j) \in E
+\end{equation*}
+
+\subsubsection*{4. Heading Consistency ($C^1$)}
+\begin{equation*}
+\| (x_{i,K} - x_{i,K-1}) - (x_{j,1} - x_{j,0}) \|_\infty \le M(1 - z_{ij}) \quad \forall (i,j) \in E
+\end{equation*}
+
+\subsubsection*{5. Boundary Conditions}
+\begin{equation*}
+x_{s,0} = p_{\text{start}}, \quad x_{g,K} = p_{\text{goal}}
+\end{equation*}
+
+\vspace{1em}
+\noindent \textbf{Note}: The L1 norm objective and infinity norm constraints are used to keep the problem linear (MILP), which is compatible with the HiGHS solver. $M$ is a sufficiently large constant ("Big-M").
+
+\end{document}

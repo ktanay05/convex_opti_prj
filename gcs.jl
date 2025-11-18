@@ -130,6 +130,7 @@ scatter!([start_pos[1]], [start_pos[2]], color=:green, marker=:star5, ms=12)
 scatter!([goal_pos[1]], [goal_pos[2]], color=:orange, marker=:star5, ms=12)
 # Plot path if it exists and is valid
 if isdefined(Main, :region_path) && length(region_path) >= 2
+    println("\nPath found!")
     println("Region path (indices): ", region_path)
     valid_indices = [i for i in region_path[2:end-1] if 1 <= i <= length(centers)]
     intermediate_points = [centers[i] for i in valid_indices]
@@ -140,14 +141,9 @@ if isdefined(Main, :region_path) && length(region_path) >= 2
     for (i, pt) in enumerate(path_points)
         println("  Step $i: ", pt)
     end
-    valid_indices = [i for i in region_path[2:end-1] if 1 <= i <= length(centers)]
-    intermediate_points = [centers[i] for i in valid_indices]
-    all_points = [start_pos; intermediate_points; goal_pos]
-    # Ensure all points are vectors of length 2
-    path_points = [p isa AbstractVector && length(p) == 2 ? p : collect(p)[1:2] for p in all_points if length(p) >= 2]
     xs = [p[1] for p in path_points]
     ys = [p[2] for p in path_points]
-    plot!(xs, ys, lw=3, color=:black, marker=:circle, label="Path")
+    plot!(xs, ys, lw=3, color=:blue, marker=:circle, label="Path")
 
     # --- Bezier curve visualization ---
     # For each segment, draw a quadratic Bezier curve from p0 to p2 with p1 as control
@@ -161,6 +157,8 @@ if isdefined(Main, :region_path) && length(region_path) >= 2
         by = [b[2] for b in bezier]
         plot!(bx, by, color=:magenta, lw=2, alpha=0.7, label=nothing)
     end
+else
+    println("\nNo valid path found from start to goal in the current decomposition.")
 end
 
 display(plt)

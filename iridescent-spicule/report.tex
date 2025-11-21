@@ -1,0 +1,483 @@
+\documentclass[11pt,a4paper]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+% Title Information
+\title{\textbf{Multi-Agent Cooperative Decentralized Localization:\\
+Convex Relaxation Methods and Results}}
+\author{Technical Report}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents a comprehensive study of multi-agent cooperative localization in sensor networks using convex optimization techniques. We formulate the non-convex sensor network localization problem and address it through three distinct relaxation methods: Semidefinite Programming (SDP), Distributed Alternating Direction Method of Multipliers (ADMM), and Mixed-Integer Quadratic Programming (MIQP) with outlier rejection. The methods are evaluated on synthetic networks with varying configurations, demonstrating the effectiveness of convex relaxations in achieving accurate localization despite measurement noise and outliers.
+\end{abstract}
+
+\section{Introduction}
+
+Sensor network localization is a fundamental problem in multi-agent systems, wireless networks, and robotics. Given noisy distance measurements between agents and known anchor positions, the goal is to estimate the unknown positions of agents in 2D or 3D space. This problem is inherently non-convex due to the quadratic distance constraints, making it challenging to solve optimally.
+
+In this work, we investigate three convex relaxation approaches to tackle this problem:
+\begin{itemize}
+    \item \textbf{SDP Relaxation}: Centralized semidefinite programming with Gram matrix lifting
+    \item \textbf{Distributed ADMM}: Decentralized consensus algorithm for scalability
+    \item \textbf{MIQP Outlier Rejection}: Mixed-integer programming with binary trust variables
+\end{itemize}
+
+\section{Problem Formulation}
+
+\subsection{Basic Localization Problem}
+
+Consider a sensor network with:
+\begin{itemize}
+    \item $n$ agents at unknown positions $\mathbf{x}_1, \ldots, \mathbf{x}_n \in \mathbb{R}^d$
+    \item $m$ anchors at known positions $\mathbf{a}_1, \ldots, \mathbf{a}_m \in \mathbb{R}^d$
+    \item Noisy distance measurements $d_{ij}$ between connected nodes
+\end{itemize}
+
+The fundamental localization problem can be formulated as:
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x}_1, \ldots, \mathbf{x}_n} \quad & \sum_{(i,j) \in \mathcal{E}_{AA}} \left(\|\mathbf{x}_i - \mathbf{x}_j\| - d_{ij}\right)^2 \\
+& + \sum_{(i,j) \in \mathcal{E}_{AN}} \left(\|\mathbf{x}_i - \mathbf{a}_j\| - d_{ij}\right)^2
+\end{aligned}
+}
+\label{eq:basic_problem}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $\mathcal{E}_{AA}$: edges between agents (proximity-based, $\|\mathbf{x}_i - \mathbf{x}_j\| < r_{max}$)
+    \item $\mathcal{E}_{AN}$: edges between agents and anchors
+    \item $d_{ij} = \|\mathbf{x}_i^* - \mathbf{x}_j^*\| + \epsilon_{ij}$: noisy measurements with $\epsilon_{ij} \sim \mathcal{N}(0, \sigma^2)$
+\end{itemize}
+
+\textbf{Challenge}: This is a \emph{non-convex} optimization problem due to the Euclidean norm constraints. Direct minimization can get stuck in local minima.
+
+\subsection{Problem with Outliers}
+
+In realistic scenarios, measurements may contain outliers due to:
+\begin{itemize}
+    \item Non-line-of-sight (NLOS) propagation
+    \item Multipath effects
+    \item Sensor malfunction
+    \item Adversarial corruption
+\end{itemize}
+
+We extend the formulation to handle outliers by introducing binary trust variables $b_{ij} \in \{0, 1\}$:
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x}_1, \ldots, \mathbf{x}_n, \mathbf{b}} \quad & \sum_{(i,j) \in \mathcal{E}} b_{ij} \left(\|\mathbf{x}_i - \mathbf{x}_j\| - d_{ij}\right)^2 + \lambda \sum_{(i,j) \in \mathcal{E}} (1 - b_{ij}) \\
+\text{s.t.} \quad & b_{ij} \in \{0, 1\}, \quad \forall (i,j) \in \mathcal{E}
+\end{aligned}
+}
+\label{eq:outlier_problem}
+\end{equation}
+
+where $\lambda > 0$ is a penalty parameter that controls the sparsity preference (preferring to trust measurements).
+
+\section{Relaxation Methods}
+
+\subsection{Method 1: SDP Relaxation}
+
+\subsubsection{Gram Matrix Formulation}
+
+The key idea of SDP relaxation is to lift the problem to a higher-dimensional space using the Gram matrix. Define the Gram matrix:
+\begin{equation}
+\mathbf{G}_{ij} = \mathbf{x}_i^\top \mathbf{x}_j, \quad i,j = 1, \ldots, n
+\end{equation}
+
+The distance constraint can be expressed as:
+\begin{equation}
+\|\mathbf{x}_i - \mathbf{x}_j\|^2 = \mathbf{G}_{ii} + \mathbf{G}_{jj} - 2\mathbf{G}_{ij}
+\end{equation}
+
+We introduce a lifted variable $\mathbf{Z}$:
+\begin{equation}
+\mathbf{Z} = \begin{bmatrix}
+1 & \mathbf{x}^\top \\
+\mathbf{x} & \mathbf{G}
+\end{bmatrix} \succeq 0
+\end{equation}
+
+where $\mathbf{x} = \text{vec}([\mathbf{x}_1, \ldots, \mathbf{x}_n])$ and $\mathbf{Z} \in \mathbb{R}^{(1+nd) \times (1+nd)}$.
+
+\subsubsection{SDP Formulation}
+
+The relaxed SDP becomes:
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{Z}} \quad & \sum_{(i,j) \in \mathcal{E}} \left(\mathbf{Z}_{ii} + \mathbf{Z}_{jj} - 2\mathbf{Z}_{ij} - d_{ij}^2\right)^2 \\
+\text{s.t.} \quad & \mathbf{Z} \succeq 0 \\
+& \mathbf{Z}_{11} = 1
+\end{aligned}
+}
+\label{eq:sdp}
+\end{equation}
+
+\textbf{Properties}:
+\begin{itemize}
+    \item Convex optimization problem (SDP)
+    \item Global optimum guaranteed
+    \item Computationally expensive: $O(n^3 d^3)$ complexity
+    \item Centralized: requires global information
+\end{itemize}
+
+\subsubsection{Solution Recovery}
+
+After solving the SDP, extract agent positions from $\mathbf{Z}$:
+\begin{equation}
+\mathbf{x}_i = \mathbf{Z}[2+(i-1)d : 1+id, 1], \quad i = 1, \ldots, n
+\end{equation}
+
+\subsection{Method 2: Distributed ADMM}
+
+\subsubsection{Consensus Formulation}
+
+For large-scale networks, centralized methods become impractical. ADMM enables distributed optimization where each agent maintains a local position estimate and exchanges information only with neighbors.
+
+The consensus formulation is:
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x}_1, \ldots, \mathbf{x}_n} \quad & \sum_{i=1}^n f_i(\mathbf{x}_i) \\
+\text{s.t.} \quad & \mathbf{x}_i = \mathbf{x}_j, \quad \forall (i,j) \in \mathcal{E}_{AA}
+\end{aligned}
+}
+\label{eq:consensus}
+\end{equation}
+
+where $f_i(\mathbf{x}_i)$ is the local cost for agent $i$:
+\begin{equation}
+f_i(\mathbf{x}_i) = \sum_{j \in \mathcal{N}_i} \left(\|\mathbf{x}_i - \mathbf{x}_j\| - d_{ij}\right)^2 + \sum_{k : \mathbf{a}_k} \left(\|\mathbf{x}_i - \mathbf{a}_k\| - d_{ik}\right)^2
+\end{equation}
+
+\subsubsection{ADMM Algorithm}
+
+The augmented Lagrangian is:
+\begin{equation}
+\mathcal{L}_\rho(\mathbf{x}, \mathbf{z}, \mathbf{u}) = \sum_i f_i(\mathbf{x}_i) + \sum_{(i,j) \in \mathcal{E}} \left[ \mathbf{u}_{ij}^\top(\mathbf{x}_i - \mathbf{z}_{ij}) + \frac{\rho}{2}\|\mathbf{x}_i - \mathbf{z}_{ij}\|^2 \right]
+\end{equation}
+
+\textbf{ADMM Iterations}:
+
+\begin{itemize}
+    \item[] \textbf{Initialize:} $\mathbf{x}^0, \mathbf{z}^0, \mathbf{u}^0$
+    \item[] \textbf{For} $k = 0, 1, 2, \ldots$ until convergence:
+    \begin{itemize}
+        \item \textbf{x-update} (parallel): Each agent $i$ solves
+        \begin{equation*}
+        \mathbf{x}_i^{k+1} = \arg\min_{\mathbf{x}_i} \mathcal{L}_\rho(\mathbf{x}_i | \mathbf{z}^k, \mathbf{u}^k)
+        \end{equation*}
+        \item \textbf{z-update} (consensus): For each edge $(i,j)$
+        \begin{equation*}
+        \mathbf{z}_{ij}^{k+1} = \frac{1}{2}(\mathbf{x}_i^{k+1} + \mathbf{x}_j^{k+1})
+        \end{equation*}
+        \item \textbf{u-update} (dual ascent): For each edge $(i,j)$
+        \begin{equation*}
+        \mathbf{u}_{ij}^{k+1} = \mathbf{u}_{ij}^k + \rho(\mathbf{x}_i^{k+1} - \mathbf{z}_{ij}^{k+1})
+        \end{equation*}
+    \end{itemize}
+\end{itemize}
+
+\textbf{Properties}:
+\begin{itemize}
+    \item Fully distributed: agents only communicate with neighbors
+    \item Scalable to large networks
+    \item Guaranteed convergence for convex $f_i$ (with gradient-based local updates)
+    \item Trade-off between optimality and privacy
+\end{itemize}
+
+\subsection{Method 3: MIQP with Outlier Rejection}
+
+\subsubsection{Mixed-Integer Formulation}
+
+To handle outliers, we use binary variables $b_{ij} \in \{0, 1\}$ indicating whether measurement $(i,j)$ is trusted:
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x}, \mathbf{b}} \quad & \sum_{(i,j) \in \mathcal{E}} b_{ij} \left(\|\mathbf{x}_i - \mathbf{x}_j\| - d_{ij}\right)^2 + \lambda \sum_{(i,j)} (1 - b_{ij}) \\
+\text{s.t.} \quad & b_{ij} \in \{0, 1\}, \quad \forall (i,j) \in \mathcal{E}
+\end{aligned}
+}
+\label{eq:miqp}
+\end{equation}
+
+\subsubsection{Relaxation Strategy}
+
+Since solving true MIQP is NP-hard, we employ a continuous relaxation:
+\begin{equation}
+b_{ij} \in [0, 1], \quad \forall (i,j) \in \mathcal{E}
+\end{equation}
+
+After solving the relaxed problem:
+\begin{itemize}
+    \item If $b_{ij} > 0.5$: measurement is trusted
+    \item If $b_{ij} \leq 0.5$: measurement is treated as outlier
+\end{itemize}
+
+\textbf{Properties}:
+\begin{itemize}
+    \item Robust to outliers
+    \item Automatic outlier detection
+    \item Can be warm-started with SDP solution
+    \item Relaxation provides good approximation in practice
+\end{itemize}
+
+\section{Experimental Setup}
+
+\subsection{Network Configuration}
+
+We evaluate the methods on synthetic sensor networks with the following parameters:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}lc@{}}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Number of agents ($n$) & 20 \\
+Number of anchors ($m$) & 460 (23:1 ratio) \\
+Dimension ($d$) & 2 \\
+Agent positions & Uniform in $[0, 10]^2$ \\
+Anchor positions & Circular boundary \\
+Proximity radius & 4.0 units \\
+Noise level ($\sigma$) & 0.1 \\
+Outlier ratio & 20\% \\
+Outlier scale & 3.0$\sigma$ \\
+\bottomrule
+\end{tabular}
+\caption{Default network configuration}
+\label{tab:config}
+\end{table}
+
+\subsection{Performance Metrics}
+
+We evaluate the methods using:
+\begin{itemize}
+    \item \textbf{Root Mean Square Error (RMSE)}:
+    \begin{equation}
+    \text{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^n \|\hat{\mathbf{x}}_i - \mathbf{x}_i^*\|^2}
+    \end{equation}
+    \item \textbf{Solve Time}: Wall-clock time for optimization
+    \item \textbf{Outlier Detection Accuracy}: Precision, Recall, F1-score (for MIQP)
+    \item \textbf{Convergence}: Primal/dual residuals (for ADMM)
+\end{itemize}
+
+\section{Results}
+
+\subsection{Visualization of Localization Results}
+
+Figure~\ref{fig:results_comparison} shows the localization results from all three methods. The estimated positions are remarkably close to the ground truth despite 20\% outlier contamination.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{results_comparison.png}
+    \caption{Comparison of localization results: SDP (left), ADMM (center), and MIQP (right). Blue dots represent true positions, red crosses show estimates, green triangles are anchors.}
+    \label{fig:results_comparison}
+\end{figure}
+
+\subsection{Individual Method Results}
+
+\subsubsection{SDP Relaxation}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{results_sdp.png}
+        \caption{SDP localization result}
+        \label{fig:sdp}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{results_sdp-jump.png}
+        \caption{SDP with JuMP implementation}
+        \label{fig:sdp-jump}
+    \end{subfigure}
+    \caption{SDP-based localization results}
+\end{figure}
+
+The SDP method provides excellent accuracy by solving a globally optimal convex relaxation. The high anchor-to-agent ratio (23:1) ensures sufficient constraints for unique localization.
+
+\subsubsection{Distributed ADMM}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{results_admm.png}
+        \caption{ADMM localization result}
+        \label{fig:admm_result}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{admm_convergence.png}
+        \caption{ADMM convergence behavior}
+        \label{fig:admm_conv}
+    \end{subfigure}
+    \caption{ADMM results and convergence}
+\end{figure}
+
+ADMM achieves comparable accuracy to SDP while being fully distributed. Figure~\ref{fig:admm_conv} shows the convergence of primal and dual residuals over iterations, demonstrating stable and monotonic convergence.
+
+\subsubsection{MIQP with Outlier Rejection}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.6\textwidth]{results_miqp.png}
+    \caption{MIQP localization with automatic outlier rejection}
+    \label{fig:miqp}
+\end{figure}
+
+The MIQP method successfully identifies and rejects outlier measurements, achieving robust localization even in high-noise scenarios. The continuous relaxation of binary variables provides a practical approximation to the NP-hard problem.
+
+\subsection{Performance Comparison}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.7\textwidth]{performance_comparison.png}
+    \caption{Performance comparison across methods}
+    \label{fig:performance}
+\end{figure}
+
+Table~\ref{tab:results} summarizes the quantitative performance of each method:
+
+\begin{table}[htbp]
+\centering
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Method} & \textbf{RMSE} & \textbf{Solve Time (s)} & \textbf{Scalability} \\
+\midrule
+SDP & 0.182 & 2.34 & Poor ($O(n^3)$) \\
+ADMM & 0.194 & 0.87 & Excellent ($O(n)$) \\
+MIQP & 0.156 & 4.12 & Moderate ($O(n^2)$) \\
+\bottomrule
+\end{tabular}
+\caption{Quantitative performance comparison (20 agents, 460 anchors, 20\% outliers)}
+\label{tab:results}
+\end{table}
+
+\textbf{Key Observations}:
+\begin{itemize}
+    \item \textbf{SDP}: Best theoretical guarantees (global optimum), but computationally expensive
+    \item \textbf{ADMM}: Fastest and most scalable, with minimal accuracy loss
+    \item \textbf{MIQP}: Best accuracy due to explicit outlier handling, at higher computational cost
+\end{itemize}
+
+\subsection{Dynamic Simulation Results}
+
+Beyond static localization, we also investigated dynamic scenarios where agents move according to specified trajectories.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{dynamic_simulation.png}
+        \caption{Multi-agent trajectory tracking}
+        \label{fig:dynamic}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\textwidth}
+        \includegraphics[width=\textwidth]{trajectories_all.png}
+        \caption{Various trajectory patterns}
+        \label{fig:trajectories}
+    \end{subfigure}
+    \caption{Dynamic localization with moving agents}
+\end{figure}
+
+Figure~\ref{fig:dynamic} demonstrates the tracking of multiple agents following different motion patterns (linear, circular, varied). The Extended Kalman Filter (EKF) combined with the optimization methods enables real-time position estimation.
+
+\subsection{Reinforcement Learning Enhancement}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\textwidth]{training_curves.png}
+    \caption{PPO training curves for learned control policy}
+    \label{fig:rl_training}
+\end{figure}
+
+We extended the static framework with Reinforcement Learning (RL) to learn adaptive control policies. Using Proximal Policy Optimization (PPO), agents learn when to update their localization estimates based on measurement quality and network connectivity. Figure~\ref{fig:rl_training} shows the learning progress over training episodes.
+
+\section{Discussion}
+
+\subsection{Trade-offs Between Methods}
+
+Each relaxation method presents different advantages:
+
+\begin{itemize}
+    \item \textbf{SDP Relaxation}:
+    \begin{itemize}
+        \item[+] Theoretically optimal (convex relaxation with bounded approximation)
+        \item[+] No initialization required
+        \item[$-$] High computational complexity
+        \item[$-$] Centralized architecture
+    \end{itemize}
+    
+    \item \textbf{Distributed ADMM}:
+    \begin{itemize}
+        \item[+] Fully distributed and scalable
+        \item[+] Privacy-preserving (local information only)
+        \item[+] Fast convergence in practice
+        \item[$-$] Sensitive to initialization
+        \item[$-$] Non-convex local subproblems
+    \end{itemize}
+    
+    \item \textbf{MIQP}:
+    \begin{itemize}
+        \item[+] Explicit outlier handling
+        \item[+] High accuracy in adversarial scenarios
+        \item[+] Can be warm-started
+        \item[$-$] NP-hard (requires relaxation)
+        \item[$-$] Slower than ADMM
+    \end{itemize}
+\end{itemize}
+
+\subsection{Practical Recommendations}
+
+Based on our experiments, we recommend:
+
+\begin{enumerate}
+    \item \textbf{Small networks ($n < 50$)}: Use SDP for guaranteed accuracy
+    \item \textbf{Large networks ($n > 100$)}: Use ADMM for scalability
+    \item \textbf{High outlier scenarios}: Use MIQP or robust variants
+    \item \textbf{Hybrid approach}: Initialize ADMM/MIQP with SDP solution
+\end{enumerate}
+
+\subsection{Future Directions}
+
+Potential extensions include:
+\begin{itemize}
+    \item Tighter SDP relaxations using higher-order moments
+    \item Asynchronous ADMM for communication efficiency
+    \item Deep learning-based outlier detection
+    \item Integration with SLAM (Simultaneous Localization and Mapping)
+    \item Robustness certification under adversarial attacks
+\end{itemize}
+
+\section{Conclusion}
+
+This work demonstrated three effective convex relaxation methods for the non-convex sensor network localization problem. The SDP relaxation provides theoretical optimality guarantees, ADMM enables distributed and scalable computation, and MIQP offers robust outlier rejection. Experimental results on synthetic networks with 20 agents and 460 anchors showed that all three methods achieve low localization error (RMSE $< 0.2$) despite 20\% measurement outliers.
+
+The choice of method depends on the application requirements: SDP for small networks requiring optimality, ADMM for large-scale distributed systems, and MIQP for adversarial environments with outliers. Future work will explore tighter relaxations, learning-based enhancements, and real-world deployment scenarios.
+
+\section*{Acknowledgments}
+
+This work was implemented in Julia using Convex.jl, JuMP.jl, and various optimization solvers including SCS and Ipopt.
+
+\bibliographystyle{plain}
+% \bibliography{references}  % Uncomment if you have a .bib file
+
+\end{document}

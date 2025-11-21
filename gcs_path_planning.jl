@@ -1,5 +1,5 @@
 using JuMP
-using HiGHS
+using SCS
 using Polyhedra
 using CDDLib
 using Graphs
@@ -224,112 +224,169 @@ println("Goal Region: $goal_region_idx (Pos: $goal_pos)")
 
 # Parameters
 bezier_degree = 2 # Quadratic Bezier
-M = 100.0 # Big-M constant
-
-model = Model(HiGHS.Optimizer)
+# 4. Define Optimization Model (SDP Relaxation)
+# We use SCS for SDP. Note: SCS does not support integer variables, so we relax them.
+model = Model(SCS.Optimizer)
 set_silent(model)
 
 # Variables
-@variable(model, y[1:n_regions], Bin)
-@variable(model, z[1:n_regions, 1:n_regions], Bin)
+# Relaxed binary variables (0 <= y <= 1)
+@variable(model, 0 <= y[1:n_regions] <= 1)
+@variable(model, 0 <= z[1:n_regions, 1:n_regions] <= 1)
+
+# Control points
 @variable(model, x[1:n_regions, 0:bezier_degree, 1:2])
+
+# Slack variables for L2 norm (t >= ||v||_2)
+@variable(model, t[1:n_regions, 1:bezier_degree] >= 0)
+
+# Big-M constant
+M = 10.0
 
 # Constraints
 
 # 1. Flow Conservation
-@constraint(model, sum(z[start_region_idx, j] for j in 1:n_regions) - sum(z[j, start_region_idx] for j in 1:n_regions) == 1)
-@constraint(model, sum(z[goal_region_idx, j] for j in 1:n_regions) - sum(z[j, goal_region_idx] for j in 1:n_regions) == -1)
-
+# Start
+@constraint(model, sum(z[start_region_idx, j] for j in 1:n_regions if adj_matrix[start_region_idx, j]) - 
+                   sum(z[j, start_region_idx] for j in 1:n_regions if adj_matrix[j, start_region_idx]) == 1)
+# Goal
+@constraint(model, sum(z[goal_region_idx, j] for j in 1:n_regions if adj_matrix[goal_region_idx, j]) - 
+                   sum(z[j, goal_region_idx] for j in 1:n_regions if adj_matrix[j, goal_region_idx]) == -1)
+# Intermediate
 for i in 1:n_regions
     if i != start_region_idx && i != goal_region_idx
-        @constraint(model, sum(z[i, j] for j in 1:n_regions) - sum(z[j, i] for j in 1:n_regions) == 0)
+        @constraint(model, sum(z[i, j] for j in 1:n_regions if adj_matrix[i, j]) - 
+                           sum(z[j, i] for j in 1:n_regions if adj_matrix[j, i]) == 0)
     end
 end
 
+# Connectivity & Capacity
 for i in 1:n_regions
-    @constraint(model, y[i] >= sum(z[i, j] for j in 1:n_regions))
-    @constraint(model, y[i] >= sum(z[j, i] for j in 1:n_regions))
-    if i == start_region_idx || i == goal_region_idx
-        @constraint(model, y[i] == 1)
-    end
+    # Outgoing
+    @constraint(model, y[i] >= sum(z[i, j] for j in 1:n_regions if adj_matrix[i, j]))
+    # Incoming
+    @constraint(model, y[i] >= sum(z[j, i] for j in 1:n_regions if adj_matrix[j, i]))
 end
 
-# 2. Containment
+# 2. Containment (H-rep)
 for i in 1:n_regions
-    h = hrep(regions[i])
-    for halfspace in halfspaces(h)
-        a = halfspace.a
-        b = halfspace.β
+    poly = regions[i]
+    # Get H-rep: Ax <= b
+    h = hrep(poly)
+    # We need to iterate over halfspaces
+    for hp in halfspaces(h)
+        n = hp.a
+        b = hp.β
         for k in 0:bezier_degree
-            @constraint(model, dot(a, x[i, k, :]) <= b + M * (1 - y[i]))
-            @constraint(model, x[i, k, 1] <= M * y[i])
-            @constraint(model, x[i, k, 1] >= -M * y[i])
-            @constraint(model, x[i, k, 2] <= M * y[i])
-            @constraint(model, x[i, k, 2] >= -M * y[i])
+            # n' * x <= b + M(1-y)
+            @constraint(model, dot(n, x[i, k, :]) <= b + M * (1 - y[i]))
+        end
+    end
+    
+    # Force x=0 if y=0
+    for k in 0:bezier_degree
+        for d in 1:2
+            @constraint(model, x[i, k, d] <= M * y[i])
+            @constraint(model, x[i, k, d] >= -M * y[i])
         end
     end
 end
 
-# 3. Continuity (C0 and C1)
-for i in 1:n_regions, j in 1:n_regions
-    if adj_matrix[i, j]
-        # C0: x[i, degree] == x[j, 0]
-        for d in 1:2
-            @constraint(model, x[i, bezier_degree, d] - x[j, 0, d] <= M * (1 - z[i, j]))
-            @constraint(model, x[i, bezier_degree, d] - x[j, 0, d] >= -M * (1 - z[i, j]))
+# 3. Continuity (C0)
+for i in 1:n_regions
+    for j in 1:n_regions
+        if adj_matrix[i, j]
+            # x[i,K] == x[j,0] if z[i,j]=1
+            for d in 1:2
+                @constraint(model, x[i, bezier_degree, d] - x[j, 0, d] <= M * (1 - z[i, j]))
+                @constraint(model, x[i, bezier_degree, d] - x[j, 0, d] >= -M * (1 - z[i, j]))
+            end
+        else
+            # Fix z=0 if not adjacent (already handled by bounds/loops but good for safety)
+            fix(z[i, j], 0.0; force=true)
         end
-        
-        # C1: Heading Consistency
-        # Enforce continuity of the derivative direction/magnitude.
-        # For quadratic Bezier: Tangent at end is proportional to (P2 - P1).
-        # Tangent at start is proportional to (P1 - P0).
-        # We enforce (x[i, K] - x[i, K-1]) == (x[j, 1] - x[j, 0])
-        for d in 1:2
-            diff_i = x[i, bezier_degree, d] - x[i, bezier_degree-1, d]
-            diff_j = x[j, 1, d] - x[j, 0, d]
-            
-            @constraint(model, diff_i - diff_j <= M * (1 - z[i, j]))
-            @constraint(model, diff_i - diff_j >= -M * (1 - z[i, j]))
-        end
-    else
-        @constraint(model, z[i, j] == 0)
     end
 end
 
-# 4. Start and Goal Constraints
+# 4. Heading Consistency (C1)
+# v_out = x[i,K] - x[i,K-1]
+# v_in = x[j,1] - x[j,0]
+for i in 1:n_regions
+    for j in 1:n_regions
+        if adj_matrix[i, j]
+            for d in 1:2
+                diff = (x[i, bezier_degree, d] - x[i, bezier_degree-1, d]) - (x[j, 1, d] - x[j, 0, d])
+                @constraint(model, diff <= M * (1 - z[i, j]))
+                @constraint(model, diff >= -M * (1 - z[i, j]))
+            end
+        end
+    end
+end
+
+# 5. Boundary Conditions
 @constraint(model, x[start_region_idx, 0, 1] == start_pos[1])
 @constraint(model, x[start_region_idx, 0, 2] == start_pos[2])
 @constraint(model, x[goal_region_idx, bezier_degree, 1] == goal_pos[1])
 @constraint(model, x[goal_region_idx, bezier_degree, 2] == goal_pos[2])
 
-# 5. Objective: Minimize Path Length (L1 Norm) + Smoothness (Regularization)
-@variable(model, t[1:n_regions, 1:bezier_degree, 1:2] >= 0)
-@variable(model, acc[1:n_regions, 1:2] >= 0) # Slack for acceleration (smoothness)
-
-lambda_smooth = 0.1 # Weight for smoothness
+# 6. Objective: Minimize Path Length (L2 Norm) via SDP
+# We want to minimize sum(t[i,k]) where t[i,k] >= ||x[i,k] - x[i,k-1]||_2
+# Schur Complement:
+# [ t*I      v ]
+# [ v'       t ]  >= 0
+# where v = x[i,k] - x[i,k-1]
 
 for i in 1:n_regions
-    # Path Length (Velocity)
     for k in 1:bezier_degree
-        for d in 1:2
-            @constraint(model, t[i, k, d] >= x[i, k, d] - x[i, k-1, d])
-            @constraint(model, t[i, k, d] >= -(x[i, k, d] - x[i, k-1, d]))
-        end
-    end
-    
-    # Smoothness (Acceleration): Minimize change in velocity
-    # (P2 - P1) - (P1 - P0) = P2 - 2P1 + P0
-    for d in 1:2
-        acc_val = x[i, 2, d] - 2*x[i, 1, d] + x[i, 0, d]
-        @constraint(model, acc[i, d] >= acc_val)
-        @constraint(model, acc[i, d] >= -acc_val)
+        # Define velocity vector v
+        v = [x[i, k, 1] - x[i, k-1, 1], x[i, k, 2] - x[i, k-1, 2]]
+        
+        # Construct the matrix for PSD constraint
+        # [ t  0  v1 ]
+        # [ 0  t  v2 ]
+        # [ v1 v2 t  ]
+        # This is equivalent to t*I_2 - v*v'/t >= 0 => t^2 >= ||v||^2
+        
+        # JuMP requires the matrix to be symmetric
+        # We build the upper triangle
+        # M_sdp = [
+        #   t[i,k]   0        v[1]
+        #   0        t[i,k]   v[2]
+        #   v[1]     v[2]     t[i,k]
+        # ]
+        
+        # Using LinearAlgebra.Symmetric or just passing the matrix to PSDCone
+        # Note: JuMP's PSDCone expects a vectorized form or a matrix.
+        # Let's use the matrix form.
+        
+        # We need to be careful with variable references in the matrix.
+        # [t 0 v1; 0 t v2; v1 v2 t]
+        
+        # Row 1
+        m11 = t[i, k]
+        m12 = 0.0
+        m13 = v[1]
+        
+        # Row 2
+        m21 = 0.0
+        m22 = t[i, k]
+        m23 = v[2]
+        
+        # Row 3
+        m31 = v[1]
+        m32 = v[2]
+        m33 = t[i, k]
+        
+        # Construct matrix
+        M_sdp = [m11 m12 m13; m21 m22 m23; m31 m32 m33]
+        
+        @constraint(model, M_sdp in PSDCone())
     end
 end
 
-# Minimize Length + Smoothness
-@objective(model, Min, sum(t) + lambda_smooth * sum(acc))
+@objective(model, Min, sum(t))
 
-println("Solving GCS optimization...")
+println("Solving GCS optimization with SCS (SDP Relaxation)...")
 optimize!(model)
 println("Status: ", termination_status(model))
 
@@ -371,54 +428,40 @@ for i in 1:n_regions, j in 1:n_regions
     end
 end
 
-# Plot Solution
-if termination_status(model) == MOI.OPTIMAL
+# Plot Solution (Flow)
+if termination_status(model) == MOI.OPTIMAL || termination_status(model) == MOI.ALMOST_OPTIMAL
     println("Solution found!")
     
-    local current = start_region_idx
-    path_regions = [current]
+    # Since we have a relaxed solution (flow), we plot all active regions/trajectories
+    # weighted by their activation value y[i].
     
-    while current != goal_region_idx
-        next_node = nothing
-        for j in 1:n_regions
-            if value(z[current, j]) > 0.5
-                next_node = j
-                break
+    for i in 1:n_regions
+        val_y = value(y[i])
+        if val_y > 0.01 # Threshold for visibility
+            cps = [value.(x[i, k, :]) for k in 0:bezier_degree]
+            
+            # Plot Control Points
+            # scatter!(plt, [p[1] for p in cps], [p[2] for p in cps], 
+            #          color=:magenta, markersize=3, marker=:square, alpha=val_y, label="")
+            
+            # Plot Curve
+            ts = range(0, 1, length=50)
+            curve_pts = []
+            for t in ts
+                pt = (1-t)^2 .* cps[1] .+ 2*(1-t)*t .* cps[2] .+ t^2 .* cps[3]
+                push!(curve_pts, pt)
             end
+            
+            plot!(plt, [p[1] for p in curve_pts], [p[2] for p in curve_pts], 
+                  color=:green, linewidth=3*val_y, alpha=val_y, label="")
         end
-        if isnothing(next_node)
-            break
-        end
-        push!(path_regions, next_node)
-        current = next_node
-    end
-    println("Path of regions: ", path_regions)
-    
-    for i in path_regions
-        cps = [value.(x[i, k, :]) for k in 0:bezier_degree]
-        
-        plot!(plt, [p[1] for p in cps], [p[2] for p in cps], 
-              color=:magenta, linestyle=:dash, linewidth=1, label="")
-        
-        scatter!(plt, [p[1] for p in cps], [p[2] for p in cps], 
-                 color=:magenta, markersize=4, marker=:square, label="")
-        
-        ts = range(0, 1, length=50)
-        curve_pts = []
-        for t in ts
-            pt = (1-t)^2 .* cps[1] .+ 2*(1-t)*t .* cps[2] .+ t^2 .* cps[3]
-            push!(curve_pts, pt)
-        end
-        
-        plot!(plt, [p[1] for p in curve_pts], [p[2] for p in curve_pts], 
-              color=:green, linewidth=3, label=(i==start_region_idx ? "Path" : ""))
     end
     
     scatter!(plt, [start_pos[1]], [start_pos[2]], color=:green, markersize=8, label="Start")
     scatter!(plt, [goal_pos[1]], [goal_pos[2]], color=:orange, markersize=8, label="Goal")
     
 else
-    println("No solution found.")
+    println("No solution found. Status: ", termination_status(model))
 end
 
 display(plt)

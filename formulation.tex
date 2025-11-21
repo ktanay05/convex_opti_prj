@@ -4,7 +4,7 @@
 \usepackage{geometry}
 \geometry{a4paper, margin=1in}
 
-\title{GCS Path Planning: Formulation and Decomposition}
+\title{GCS Path Planning: SDP Relaxation and Formulation}
 \author{Antigravity}
 \date{\today}
 
@@ -13,7 +13,7 @@
 \maketitle
 
 \section{Introduction}
-This document details the mathematical formulation for the Graph of Convex Sets (GCS) path planning algorithm and the convex decomposition method used to generate the free space regions.
+This document details the mathematical formulation for the Graph of Convex Sets (GCS) path planning algorithm, specifically focusing on the Semidefinite Programming (SDP) relaxation used to minimize the L2 norm of the trajectory velocity.
 
 \section{Convex Decomposition}
 The goal is to decompose the free space $\mathcal{F} = \mathcal{W} \setminus \bigcup_{j=1}^M \mathcal{O}_j$, where $\mathcal{W}$ is the rectangular domain and $\mathcal{O}_j$ are convex obstacles, into a set of convex polygons $\{R_1, \dots, R_N\}$.
@@ -51,9 +51,9 @@ We decompose $P$ into convex regions using a heuristic approach based on resolvi
     \item $Regions \gets Regions \cup \{P\}$.
 \end{enumerate}
 
-\section{Trajectory Optimization (MICP)}
+\section{Trajectory Optimization (SDP Relaxation)}
 
-We solve a Mixed-Integer Convex Program (MICP) to find a path through the graph of convex sets and optimize the trajectory within them.
+We solve a relaxed version of the GCS problem using Semidefinite Programming (SDP). The binary variables are relaxed to continuous variables, resulting in a "flow" solution rather than a discrete path.
 
 \subsection{Sets and Indices}
 \begin{itemize}
@@ -65,24 +65,24 @@ We solve a Mixed-Integer Convex Program (MICP) to find a path through the graph 
 
 \subsection{Variables}
 \begin{itemize}
-    \item $y_i \in \{0, 1\}$: Binary variable, equal to 1 if region $i$ is visited.
-    \item $z_{ij} \in \{0, 1\}$: Binary variable, equal to 1 if the transition from region $i$ to $j$ is active.
+    \item $y_i \in [0, 1]$: Continuous variable representing the activation of region $i$.
+    \item $z_{ij} \in [0, 1]$: Continuous variable representing the flow from region $i$ to $j$.
     \item $x_{i,k} \in \mathbb{R}^2$: Control point $k$ ($k \in \{0, \dots, K\}$) for the B\'ezier curve in region $i$.
-    \item $t_{i,k} \in \mathbb{R}^2$: Slack variables for path length (velocity) minimization.
-    \item $a_{i} \in \mathbb{R}^2$: Slack variables for acceleration (smoothness) minimization.
+    \item $t_{i,k} \in \mathbb{R}$: Slack variable for the L2 norm of the velocity vector.
 \end{itemize}
 
 \subsection{Optimization Problem}
 
-The objective is to minimize a weighted sum of path length and acceleration (smoothness).
+The objective is to minimize the sum of the L2 norms of the velocity vectors (path length approximation).
 
 \begin{equation*}
-\min \sum_{i \in V} \left( \sum_{k=1}^K \| x_{i,k} - x_{i,k-1} \|_1 + \lambda_{smooth} \| x_{i,2} - 2x_{i,1} + x_{i,0} \|_1 \right)
+\min \sum_{i \in V} \sum_{k=1}^K t_{i,k}
 \end{equation*}
 
 \noindent \textbf{Subject to:}
 
 \subsubsection*{1. Flow Conservation}
+Standard network flow constraints adapted for the relaxed variables:
 \begin{align*}
 & \sum_{j: (s,j) \in E} z_{sj} - \sum_{j: (j,s) \in E} z_{js} = 1 \quad (\text{Start Node } s) \\
 & \sum_{j: (g,j) \in E} z_{gj} - \sum_{j: (j,g) \in E} z_{jg} = -1 \quad (\text{Goal Node } g) \\
@@ -90,29 +90,39 @@ The objective is to minimize a weighted sum of path length and acceleration (smo
 & y_i \ge \sum_{j} z_{ij}, \quad y_i \ge \sum_{j} z_{ji}
 \end{align*}
 
-\subsubsection*{2. Containment}
+\subsubsection*{2. L2 Norm via Schur Complement (SDP)}
+We want to enforce $t_{i,k} \ge \|v_{i,k}\|_2$, where $v_{i,k} = x_{i,k} - x_{i,k-1}$. This is equivalent to $t_{i,k}^2 \ge v_{i,k}^T v_{i,k}$ (for $t_{i,k} \ge 0$).
+Using the Schur Complement, this can be written as a Linear Matrix Inequality (LMI):
+\begin{equation*}
+\begin{pmatrix}
+t_{i,k} I_d & v_{i,k} \\
+v_{i,k}^T & t_{i,k}
+\end{pmatrix} \succeq 0
+\end{equation*}
+where $I_d$ is the $d \times d$ identity matrix.
+
+\subsubsection*{3. Containment}
 \begin{align*}
 & A_i x_{i,k} \le b_i + M(1 - y_i) \quad \forall i \in V, k \in \{0,\dots,K\} \\
 & -M y_i \le x_{i,k} \le M y_i \quad (\text{Force } x_{i,k}=0 \text{ if } y_i=0)
 \end{align*}
 
-\subsubsection*{3. Continuity ($C^0$)}
+\subsubsection*{4. Continuity ($C^0$)}
 \begin{equation*}
 \| x_{i,K} - x_{j,0} \|_\infty \le M(1 - z_{ij}) \quad \forall (i,j) \in E
 \end{equation*}
 
-\subsubsection*{4. Heading Consistency ($C^1$)}
-To ensure smooth transitions, we enforce continuity of the velocity vector. For quadratic B\'ezier curves, the tangent is proportional to the difference between control points.
+\subsubsection*{5. Heading Consistency ($C^1$)}
 \begin{equation*}
 \| (x_{i,K} - x_{i,K-1}) - (x_{j,1} - x_{j,0}) \|_\infty \le M(1 - z_{ij}) \quad \forall (i,j) \in E
 \end{equation*}
 
-\subsubsection*{5. Boundary Conditions}
+\subsubsection*{6. Boundary Conditions}
 \begin{equation*}
 x_{s,0} = p_{\text{start}}, \quad x_{g,K} = p_{\text{goal}}
 \end{equation*}
 
 \vspace{1em}
-\noindent \textbf{Note}: The L1 norm objective and infinity norm constraints are used to keep the problem linear (MILP), which is compatible with the HiGHS solver. $M$ is a sufficiently large constant ("Big-M"). $\lambda_{smooth}$ is a regularization weight to encourage smoother paths.
+\noindent \textbf{Note}: $M$ is a sufficiently large constant ("Big-M"). The relaxation allows the problem to be solved by convex solvers like SCS, which support PSD cones but not integer variables. The result is a flow indicating the optimal path.
 
 \end{document}

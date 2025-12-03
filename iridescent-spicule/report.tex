@@ -4,9 +4,10 @@
 \usepackage[utf8]{inputenc}
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb,amsthm}
+\usepackage{enumitem}  
 \usepackage{graphicx}
 \usepackage{subcaption}
-\usepackage{hyperref}
+\usepackage[hidelinks]{hyperref}
 \usepackage{booktabs}
 \usepackage{xcolor}
 
@@ -235,6 +236,7 @@ The augmented Lagrangian is:
 \end{itemize}
 
 \subsection{Method 3: MIQP with Outlier Rejection}
+\label{sec:MIQP}
 
 \subsubsection{Mixed-Integer Formulation}
 
@@ -277,6 +279,121 @@ After solving the relaxed problem:
     \item Can be warm-started with SDP solution
     \item Relaxation provides good approximation in practice
 \end{itemize}
+
+\subsection{Additional Convexification Techniques}
+
+\subsubsection{Method 4: Epigraph Based SOCP Relaxation}
+
+The cost function from the SDP approach is given by
+\begin{equation*}
+\begin{aligned}
+\min_{\mathbf{x}_1, \ldots, \mathbf{x}_n} \quad & \sum_{(i,j) \in \mathcal{E}} \frac{1}{\sigma^2 d_{ij}^2} \left(\|\mathbf{x}_i - \mathbf{x}_j\| - d_{ij}\right)^2
+\end{aligned}
+\end{equation*}
+The above cost function is nonlinear; hence, we can obtain a simpler convex relaxation using an epigraph formulation.  To do this, add a convex constraint $t_{ij}\geq (\|x_i - x_j \| - d_{ij})^2$ which is the rotated second order cone (SOC) form. 
+ On top of this, we introduce a variable $s_{ij}$ as upper bound on the distance so that $s_{ij} \geq \|x_i - x_j \|$ between the agents.
+ Hence the residual constraint becomes $t_{ij}\geq (s_{ij}- d_{ij})^2$.
+
+ The optimization problem reduces to 
+ \begin{equation}
+\begin{aligned}
+\min_{\mathbf{x_i, s_{ij, d_{ij}}}} \quad & \sum_{(i,j) \in \mathcal{E}} \frac{1}{\sigma^2 d_{ij}^2} t_{ij} \\
+\text{s.t.} \quad & s_{ij} \geq \|x_i - x_j \| \hspace{2cm} (SOC \; constraint)\\
+& t_{ij}\geq (s_{ij}- d_{ij})^2 \hspace{1.75cm} (Rotated \;SOC \;constraint)\\
+& x_i \in \mathbb{R}^d, s_{ij} \geq 0, t_{ij} \geq 0
+\end{aligned}
+\label{socp_epi}
+\end{equation}
+
+The constraints mentioned in the optimization problem are nonlinear and can be further simplifed by using Schur's complemet to get LMI form.
+
+\begin{equation}
+    t_{ij}\geq (s_{ij}- d_{ij})^2 \iff \begin{bmatrix} t_{ij} & (s_{ij}- d_{ij}) \\ (s_{ij}- d_{ij})^\top & 1
+\end{bmatrix}  \succeq 0
+\label{rot_soc}
+\end{equation}
+
+For the SOC distance constraint, manipulate using the following
+\begin{equation}
+    \begin{aligned}
+        & s_{ij}^2 - \|x_i - x_j \|^2 \geq 0\\
+        \Rightarrow & s_{ij} - s_{ij}^{-1}\|x_i - x_j \|^2 \geq 0 \quad s_{ij}\neq 0\\
+        \Rightarrow & \begin{bmatrix} s_{ij} & (x_i- x_j) \\
+        (x_i- x_j)^\top & s_{ij}\end{bmatrix} \succeq0 \quad s_{ij}\neq 0\\       
+    \end{aligned}
+\label{dist_const}
+\end{equation}
+
+Based on \eqref{socp_epi}, \eqref{rot_soc},\eqref{dist_const}, the final optimization problem can be posed as
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x_i}, \mathbf{s_{ij}}, \mathbf{t_{ij}}} \quad & \sum_{(i,j) \in \mathcal{E}} \frac{1}{\sigma^2 d_{ij}^2} t_{ij} \\
+\text{s.t.} \quad & \begin{bmatrix} s_{ij} & (x_i- x_j) \\
+        (x_i- x_j)^\top & s_{ij}\end{bmatrix} \succeq0 \\
+        \quad & \begin{bmatrix} t_{ij} & (s_{ij}- d_{ij}) \\ (s_{ij}- d_{ij})^\top & 1\end{bmatrix}  \succeq 0 \\
+        \quad & x_i \in \mathbb{R}^d, s_{ij} > 0, t_{ij} \geq 0
+\end{aligned}}
+\label{eq:socp_epi}
+\end{equation}
+
+
+\subsubsection{Method 5: Robust Huber Loss via Epigraph}
+The current method uses the squared residual of the form $\left(\|{x}_i - {x}_j\| - d_{ij}\right)^2$. Squared losses are sensitive to outliers, so in \autoref{sec:MIQP} (MIQP) binary trust variables $b_{ij}$ are introduced. There is a simpler way to do that by replacing squared loss with Huber loss, which is quadratic for small residuals and linear for large residuals.  The Huber loss function is convex, smooth, and does not need integer variables. 
+
+For residual r, the Huber loss is given by
+\begin{equation}
+    L_\delta(r) = \begin{cases} \frac{1}{2}r^2 &, \text{if} \;\;|r| \leq \delta\\
+    \delta|r|-\frac{1}{2}\delta^2 &, \text{if} \;\; |r|>\delta
+    \end{cases}
+    \label{huber_loss}
+\end{equation}
+
+In the above equation, $\delta$ is a user-specified hyperparameter that determines the threshold for the loss function.
+
+\begin{enumerate}[label=(\roman*)]
+    \item When the error is small, squared loss is used $\rightarrow$ high accuracy.
+    \item When the error is large, absolute loss is used $\rightarrow$ suppress outliers.
+\end{enumerate}
+
+The epigraph formulation makes the optimization problem clean despite it being a piecewise function. The residual in the loss function is given by $r_{ij} = \|{x}_i - {x}_j\| - d_{ij}$ where $r_{ij} \in \mathbb{R}$. Additionally, $|r_{ij}|$ can be wriiten in form of LP as $s_{ij}\geq r_{ij}$ and $ s_{ij}\geq -r_{ij}$. This gives $s_{ij}= |r_{ij}|$ at optimiality. 
+
+We also introduce an epigraph variable $t_{ij}$ such that
+\begin{align*}
+        & t_{ij} \geq L_\delta(r)\\
+        & L_\delta(r) = \max \left(\frac{1}{2}r^2,\delta|r|-\frac{1}{2}\delta^2\right)
+\end{align*}
+
+Epigraph formulation helps replace the piecewise loss function with a set of convex constraints given by 
+
+\begin{align*}
+        t_{ij} & \geq L_\delta(r) \Rightarrow \|r_{ij}\|^2 \leq 2t_{ij} \quad \text{or} \quad   (r_{ij}, \sqrt{2t_{ij}}\in \text{SOC}) \\
+        t_{ij} & \geq \delta|r_{ij}|-\frac{1}{2}\delta^2
+\end{align*}
+
+Hence the final optimization problem for this case becomes
+
+\begin{equation}
+\boxed{
+\begin{aligned}
+\min_{\mathbf{x_i}, \mathbf{s_{ij}}, \mathbf{t_{ij}}} \quad & \sum_{(i,j) \in \mathcal{E}} \frac{1}{\sigma^2 d_{ij}^2} t_{ij} \\
+\text{s.t.} \quad & r_{ij} = \|{x}_i - {x}_j|| - d_{ij} \\
+        \quad & s_{ij}\geq r_{ij}  \\
+        \quad & s_{ij}\geq -r_{ij} \\
+        \quad & t_{ij} \geq \delta s_{ij}-\frac{1}{2}\delta^2 \\
+        \quad & r_{ij}^2 \leq 2t_{ij} \\
+        \quad & s_{ij} \geq 0, t_{ij} \geq 0
+\end{aligned}}
+\label{eq:socp_epi}
+\end{equation}
+
+
+
+
+
+
+
 
 \section{Experimental Setup}
 
